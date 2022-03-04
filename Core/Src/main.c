@@ -47,8 +47,11 @@ TIM_HandleTypeDef htim17;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-uint8_t TxAddress[5] = {0xE7,0xE7,0xE7,0xE7,0xE7};
-uint8_t GPS_data[32];
+ uint8_t TxAddress[5] = {0xE7,0xE7,0xE7,0xE7,0xE7};
+uint8_t command = 0;
+volatile uint8_t DownLink_cmd = 0;
+ uint8_t DownLink[32];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,34 +66,18 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-	if(GPIO_Pin == NRF_CS_Pin)
+	if(command == 0xAA)
 	{
-		uint8_t DownLinkLth = 0;
-		uint8_t UpLinkLth = 15;
-		/* UpLink prepare fifo*/
-		uint8_t UpLinkData[UpLinkLth];
-		uint8_t DownLinkData[32];
-		HAL_SPI_TransmitReceive(&hspi1, &UpLinkLth,&DownLinkLth, 1, 100);
-		if(DownLinkLth != 0)
-		{
-			if(DownLinkLth >= UpLinkLth)
-				HAL_SPI_TransmitReceive(&hspi1, UpLinkData, DownLinkData, DownLinkLth, 100);
-			else
-				HAL_SPI_TransmitReceive(&hspi1, UpLinkData, DownLinkData, UpLinkLth, 100);
 
-			//NRF24_Transmit(DownLinkData);
-
-		}
-		else
-		{
-			/*GNSS data*/
-		}
-
-
+		HAL_SPI_Receive(hspi, DownLink, 32, 100);
+		DownLink_cmd = 1;
 	}
+	HAL_SPI_Receive_IT(&hspi1, &command, 1);
 }
+
+
 
 void LED_Blink()
 {
@@ -99,13 +86,8 @@ void LED_Blink()
 		HAL_GPIO_TogglePin(NRF_CE_GPIO_Port, NRF_CE_Pin);
 		HAL_Delay(100);
 	}
+}
 
-}
-void  HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-	HAL_UART_Receive_IT(&huart1, GPS_data, 32);
-	NRF24_Transmit(GPS_data);
-}
 /* USER CODE END 0 */
 
 /**
@@ -140,16 +122,17 @@ int main(void)
   MX_TIM17_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+
   LED_Blink(); //Hello world
 
 
 
 
   NRF24_Init();
-  NRF24_TxMode(TxAddress, 10);
+  NRF24_TxMode(TxAddress, 4);
 
-  HAL_UART_Receive_IT(&huart1, GPS_data, 32); 	//
-
+  //HAL_UART_Receive_IT(&huart1, GPS_data, 32); 	//start GPS
+  HAL_SPI_Receive_IT(&hspi1, &command, 1);
 
 
   /* USER CODE END 2 */
@@ -158,6 +141,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if(DownLink_cmd == 1)
+	  {
+		  NRF24_Transmit(DownLink);
+		  //HAL_UART_Transmit(&huart1, DownLink, 32, 100);
+		  //HAL_GPIO_TogglePin(NRF_CE_GPIO_Port, NRF_CE_Pin);
+		  DownLink_cmd = 0;
+	  }
 
     /* USER CODE END WHILE */
 
@@ -232,7 +222,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.NSS = SPI_NSS_HARD_INPUT;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -297,7 +287,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 38400;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -349,12 +339,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SPI_CS_Pin */
-  GPIO_InitStruct.Pin = SPI_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(SPI_CS_GPIO_Port, &GPIO_InitStruct);
-
   /*Configure GPIO pin : NRF_SCK_Pin */
   GPIO_InitStruct.Pin = NRF_SCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -375,14 +359,38 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(NRF_MISO_GPIO_Port, &GPIO_InitStruct);
 
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
-
 }
 
 /* USER CODE BEGIN 4 */
+/*void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
 
+	if(1)//GPIO_Pin == SPI_CS_Pin
+	{
+		uint8_t command = 0;
+
+		//uint8_t DownLink[32];
+
+
+		HAL_SPI_Receive(&hspi1, &command, 1, 100);
+		//HAL_SPI_Receive(&hspi1, DownLink, 32, 100);
+		HAL_UART_Transmit(&huart1, &command, 1, 100);
+		//HAL_UART_Transmit(&huart1, DownLink, 32, 100);
+		if(command == 0x01)
+		{
+
+
+
+
+		}
+	}
+}*/
+/*void  HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	NRF24_Transmit(GPS_data);
+	HAL_UART_Receive_IT(&huart1, GPS_data, 32);
+#warning change positions
+}*/
 /* USER CODE END 4 */
 
 /**
